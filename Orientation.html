@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Orientation Cube</title>
+<style>
+  :root { color-scheme: light dark; --bg:#f2f2f5; --fg:#1b1b20; --btn:#1b1b20; --btn-fg:#fff;
+    box-sizing:border-box; padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px); }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg:#0e0e12; --fg:#eee; --btn:#eee; --btn-fg:#111; } }
+  :root[data-theme="dark"] { --bg:#0e0e12; --fg:#eee; --btn:#eee; --btn-fg:#111; }
+  html, body { margin:0; height:100%; overflow:hidden; background:var(--bg); color:var(--fg);
+    font-family:-apple-system, system-ui, "Segoe UI", Roboto, sans-serif; touch-action:none; }
+  canvas { display:block; width:100%; height:100%; }
+  #ui { position:fixed; left:0; right:0; bottom:0; padding:16px 16px calc(16px + env(safe-area-inset-bottom,0px));
+    display:flex; flex-direction:column; align-items:center; gap:10px; pointer-events:none; }
+  #hint { font-size:14px; opacity:.75; text-align:center; }
+  #enable { pointer-events:auto; border:0; border-radius:999px; padding:14px 26px; font-size:16px; font-weight:600;
+    background:var(--btn); color:var(--btn-fg); }
+  #readout { font:12px ui-monospace, Menlo, monospace; opacity:.6; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui">
+  <div id="hint">Tilt and rotate your phone</div>
+  <button id="enable">Enable motion sensors</button>
+  <div id="readout"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+(function () {
+  var canvas = document.getElementById('c');
+  var renderer = new THREE.WebGLRenderer({ canvas: canvas, antialias: true, alpha: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  var scene = new THREE.Scene();
+  var camera = new THREE.PerspectiveCamera(45, 1, 0.1, 100);
+  camera.position.set(0, 0, 6);
+
+  scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  var dir = new THREE.DirectionalLight(0xffffff, 0.9);
+  dir.position.set(3, 4, 5);
+  scene.add(dir);
+
+  var mat = new THREE.MeshStandardMaterial({ color: 0xff3366, roughness: 0.35, metalness: 0.1 });
+  var cube = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 2), mat);
+  scene.add(cube);
+  cube.add(new THREE.LineSegments(
+    new THREE.EdgesGeometry(cube.geometry),
+    new THREE.LineBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.5 })
+  ));
+
+  function resize() {
+    var w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.fov = w < h ? 60 : 45;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // Orientation state (degrees). Defaults = phone held upright.
+  var st = { alpha: 0, beta: 90, gamma: 0 };
+  var hasSensor = false;
+  var hint = document.getElementById('hint');
+  var btn = document.getElementById('enable');
+  var readout = document.getElementById('readout');
+
+  function onOrient(e) {
+    if (e.alpha == null && e.beta == null && e.gamma == null) return;
+    if (!hasSensor) {
+      hasSensor = true;
+      btn.style.display = 'none';
+      hint.textContent = 'Tilt and rotate your phone';
+    }
+    st.alpha = e.alpha || 0;
+    st.beta = e.beta || 0;
+    st.gamma = e.gamma || 0;
+  }
+
+  function listen() { window.addEventListener('deviceorientation', onOrient, true); }
+
+  btn.addEventListener('click', function () {
+    var D = window.DeviceOrientationEvent;
+    if (D && typeof D.requestPermission === 'function') {
+      D.requestPermission().then(function (r) {
+        if (r === 'granted') listen();
+        else hint.textContent = 'Permission denied. Drag the cube instead.';
+      }).catch(function () { hint.textContent = 'Sensors unavailable. Drag the cube instead.'; });
+    } else {
+      listen();
+    }
+  });
+  listen(); // Android and others need no permission
+
+  // Fallback: drag to simulate orientation when no sensor data arrives
+  var dragging = false, lx = 0, ly = 0;
+  canvas.addEventListener('pointerdown', function (e) { dragging = true; lx = e.clientX; ly = e.clientY; });
+  window.addEventListener('pointerup', function () { dragging = false; });
+  window.addEventListener('pointermove', function (e) {
+    if (!dragging || hasSensor) return;
+    st.alpha = (st.alpha - (e.clientX - lx) * 0.6 + 360) % 360;
+    st.gamma = Math.max(-90, Math.min(90, st.gamma + (e.clientX - lx) * 0.3));
+    st.beta = Math.max(-180, Math.min(180, st.beta + (e.clientY - ly) * 0.6));
+    lx = e.clientX; ly = e.clientY;
+  });
+  setTimeout(function () {
+    if (!hasSensor) hint.textContent = 'No sensor data yet. Tap the button, or drag to rotate.';
+  }, 1500);
+
+  var rad = Math.PI / 180;
+  var euler = new THREE.Euler();
+  var q = new THREE.Quaternion();
+  var q1 = new THREE.Quaternion(-Math.sqrt(0.5), 0, 0, Math.sqrt(0.5));
+  var zee = new THREE.Vector3(0, 0, 1);
+  var qs = new THREE.Quaternion();
+  var col = new THREE.Color();
+
+  function frame() {
+    requestAnimationFrame(frame);
+
+    // Device orientation -> quaternion (standard W3C mapping)
+    var orient = ((screen.orientation && screen.orientation.angle) || window.orientation || 0) * rad;
+    euler.set(st.beta * rad, st.alpha * rad, -st.gamma * rad, 'YXZ');
+    q.setFromEuler(euler);
+    q.multiply(q1);
+    q.multiply(qs.setFromAxisAngle(zee, -orient));
+    cube.quaternion.slerp(q.clone().invert(), 0.25); // cube stays fixed in the world
+
+    // Color: hue = compass heading, saturation = front/back tilt, lightness = left/right tilt
+    var h = ((st.alpha % 360) + 360) % 360 / 360;
+    var s = 0.4 + 0.6 * Math.min(1, Math.abs(st.beta) / 180);
+    var l = 0.35 + 0.3 * Math.min(1, Math.abs(st.gamma) / 90);
+    col.setHSL(h, s, l);
+    mat.color.lerp(col, 0.3);
+
+    readout.textContent = 'α ' + st.alpha.toFixed(0) + '°  β ' + st.beta.toFixed(0) + '°  γ ' + st.gamma.toFixed(0) + '°';
+    renderer.render(scene, camera);
+  }
+  frame();
+})();
+</script>
+</body>
+</html>
